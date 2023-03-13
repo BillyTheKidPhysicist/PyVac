@@ -1,0 +1,2 @@
+PyVac is a library to aid in the analysis of vacuum systems that are well described by the standard simple analytic formulas for conductance and throughput. It also serves to facilitate  "back of the envelope" quality calculation to aid in the initial planning of a vacuum system.
+This first commit  is the version used in my thesis. Future version will become more user friendly.
