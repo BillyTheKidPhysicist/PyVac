@@ -3,9 +3,12 @@ Contains methods and objects for computing vacuum system performance. A model of
 component, then the system of equations of conductance and pump speed are converted to a matrix and solved. 
 
 The model is simple and currently only allows a linear vacuum system composed of pumping regions, constants pressure 
-regions, apertures, and long tubes, with pressure values computed at each pump.
+regions, apertures, and tubes, with pressure values computed at each pump.
+
+Dimension units: cm
+Volume units: L
+Molar mass units: grams/mol
 """
-import warnings
 from math import sqrt
 from typing import Union, Iterable
 
@@ -15,30 +18,31 @@ from constants import ROOM_TEMPERATURE, MOLAR_MASSES
 
 RealNum = Union[float, int]
 N2_mass = MOLAR_MASSES['N2']
-long_tube_LD_ratio = 5  # A long tube has a length ot diameter ration of about 5. Less than this and the approximation
-
-
-# is dubious
-
-
-def long_tube_conductance(D, L, T=ROOM_TEMPERATURE, m=N2_mass) -> float:
-    """Return the conductance of a long tube (L>>D)"""
-    geometric_factor = D ** 3 / L
-    gas_factor = 3.81 * sqrt(T / m)
-    return gas_factor * geometric_factor
 
 
 def aperture_conductance(D, T=ROOM_TEMPERATURE, m=N2_mass):
     """Return the conductance of an aperture"""
+    assert D > 0 and T > 0 and m > 0
     return 2.9 * sqrt(T / m) * D ** 2
 
 
-def check_long_tube_params(L, D):
-    """Check that the parameters for a long tube are consistent with the approximation. Raise a warning if not"""
+def tube_conductance(D, L, T=ROOM_TEMPERATURE, m=N2_mass) -> float:
+    """
+    Return the conductance of a tube. This model of conductance models the tube as an aperture in parallel with a
+    long tube. This allows easy modeling of intermediate tubes to an accuracy of around 10%.
+    See 'A User's Guide to Vacuum Technology by O'Hanlen'.
+    """
+    assert L > 0 and D > 0 and T > 0 and m > 0
+    C_long_tube = (D ** 3 / L) * (3.81 * sqrt(T / m))
+    print(C_long_tube)
+    C_aperture = aperture_conductance(D)
+    C = 1 / (1 / C_long_tube + 1 / C_aperture)
+    return C
+
+
+def check_tube_params(L, D):
     if L < 0 or D < 0:
         raise ValueError("L and D must both be greater than 0")
-    if L < D * 5:
-        warnings.warn("Tube length must be greater than about 5 times the tube diameter for valid results")
 
 
 def check_chamber_parameters(S, Q, P):
@@ -50,7 +54,7 @@ def check_chamber_parameters(S, Q, P):
 
 
 class Tube:
-    """A class to represent a long tube"""
+    """A class to represent a tube"""
 
     def __init__(self, L: RealNum, D: RealNum, name: str):
         assert L > 0.0 and D > 0.0
@@ -60,7 +64,7 @@ class Tube:
 
     def C(self) -> float:
         """Return the conductance of the tube"""
-        return long_tube_conductance(self.D, self.L)
+        return tube_conductance(self.D, self.L)
 
 
 class Chamber:
@@ -195,16 +199,16 @@ class VacuumSystem:
         self.components: list[Component] = []
         self.graph = {}
 
-    def add_long_tube(self, L: float, D: float, name: str = 'unassigned'):
+    def add_tube(self, L: float, D: float, name: str = 'unassigned'):
         """
-        Add a long tube to the vacuum system. Length must be sufficiently longer than the diameter for accuracy
+        Add a tube to the vacuum system. Length must be sufficiently longer than the diameter for accuracy
         
         :param L: Length of the tube, m
         :param D: Inside diameter of the tube, m
         :param name: User specified name
         :return: None
         """
-        check_long_tube_params(L, D)
+        check_tube_params(L, D)
         component = Tube(L, D, name)
         self.components.append(component)
 
