@@ -20,6 +20,9 @@ RealNum = Union[float, int]
 N2_mass = MOLAR_MASSES['N2']
 
 
+# Bibliography:
+# 1: 'A User's Guide to Vacuum Technology by O'Hanlen'
+
 def aperture_conductance(D, T=ROOM_TEMPERATURE, m=N2_mass):
     """Return the conductance of an aperture"""
     assert D > 0 and T > 0 and m > 0
@@ -29,15 +32,18 @@ def aperture_conductance(D, T=ROOM_TEMPERATURE, m=N2_mass):
 def tube_conductance(D, L, T=ROOM_TEMPERATURE, m=N2_mass) -> float:
     """
     Return the conductance of a tube. This model of conductance models the tube as an aperture in parallel with a
-    long tube. This allows easy modeling of intermediate tubes to an accuracy of around 10%.
-    See 'A User's Guide to Vacuum Technology by O'Hanlen'.
+    long tube. This allows easy modeling of intermediate tubes to an accuracy of around 10%. See [1]
     """
     assert L > 0 and D > 0 and T > 0 and m > 0
     C_long_tube = (D ** 3 / L) * (3.81 * sqrt(T / m))
-    print(C_long_tube)
     C_aperture = aperture_conductance(D)
     C = 1 / (1 / C_long_tube + 1 / C_aperture)
     return C
+
+
+def check_aperture_parameters(D):
+    if D < 0:
+        raise ValueError("D must be greater than 0")
 
 
 def check_tube_params(L, D):
@@ -47,9 +53,9 @@ def check_tube_params(L, D):
 
 def check_chamber_parameters(S, Q, P):
     """Check that the parameters of a chamber are consistent."""
-    if S < 0 or Q < 0 or P < 0:
+    if S < 0 or Q < 0 or (P is not None and P < 0):
         raise ValueError("S,Q, and P must all be >=0")
-    if P != 0 and (S > 0 or Q > 0):  # initial pressure is a constaint, and would clash with Q and S
+    if (P is not None) and (S > 0 or Q > 0):  # initial pressure is a constaint, and would clash with Q and S
         raise ValueError("If the pressure is specified as non zero, the pumping speed and gas load must be zero")
 
 
@@ -57,7 +63,6 @@ class Tube:
     """A class to represent a tube"""
 
     def __init__(self, L: RealNum, D: RealNum, name: str):
-        assert L > 0.0 and D > 0.0
         self.name = name  # user specified name
         self.L = L  # length, m
         self.D = D  # inside diameter, m
@@ -65,6 +70,18 @@ class Tube:
     def C(self) -> float:
         """Return the conductance of the tube"""
         return tube_conductance(self.D, self.L)
+
+
+class Aperture:
+    """A class to represent a thin aperture"""
+
+    def __init__(self, D: RealNum, name: str):
+        self.D = D
+        self.name = name
+
+    def C(self):
+        """Return the conductance of the aperture"""
+        return aperture_conductance(self.D)
 
 
 class Chamber:
@@ -91,7 +108,7 @@ class Chamber:
 
 
 def total_conductance(components) -> float:
-    """Return the total conductance of a provided components assumed to be in series"""
+    """Return the total conductance of components assumed to be in series"""
     return 1 / sum(1 / component.C() for component in components)
 
 
@@ -139,19 +156,20 @@ def make_Q_vec(chambers):
         for branch in branches:
             if len(branch) != 0:
                 tubes, chamber_b = branch[:-1], branch[-1]
-                C_total = total_conductance(tubes)
-                if chamber_b.P() is not None:
-                    Q_vec[i] += C_total * chamber_b.P()
+                if len(tubes) != 0:
+                    C_total = total_conductance(tubes)
+                    if chamber_b.P() is not None:
+                        Q_vec[i] += C_total * chamber_b.P()
     return Q_vec
 
 
-def make_C_matrix(chambers):
+def make_C_matrix(chambers, components):
     """Return the conductance matrix"""
     dim = len(chambers)
     C_matrix = np.zeros((dim, dim))
     for idx_a, chamber_a in enumerate(chambers):
         C_matrix[idx_a, idx_a] += chamber_a.S()
-        branches = branches_to_neighbor_chambers(chamber_a, chambers)
+        branches = branches_to_neighbor_chambers(chamber_a, components)
         for branch in branches:
             assert len(branch) != 1  # either no branch, or at least one tube, then a vacuum chamber
             if len(branch) != 0:
@@ -164,32 +182,7 @@ def make_C_matrix(chambers):
     return C_matrix
 
 
-def solve_system(vac_sys):
-    """
-    Solve for pressure in the vacuum system, return a dictionary that maps chambers to their pressure
-
-    :param vac_sys:
-    :return:
-    """
-    unconstrained_chambers = []
-    for chamber in vac_sys.chambers():
-        if chamber.P() is None:
-            unconstrained_chambers.append(chamber)
-
-    Q = make_Q_vec(unconstrained_chambers)
-    C = make_C_matrix(unconstrained_chambers)
-    _P = np.linalg.inv(C) @ Q
-
-    P = {}
-    for chamber in vac_sys.chambers():
-        if chamber in unconstrained_chambers:
-            P[chamber] = _P[unconstrained_chambers.index(chamber)]
-        else:
-            P[chamber] = chamber.P()
-    return P
-
-
-Component = Union[Tube, Chamber]
+Component = Union[Tube, Chamber, Aperture]
 
 
 class VacuumSystem:
@@ -199,9 +192,22 @@ class VacuumSystem:
         self.components: list[Component] = []
         self.graph = {}
 
+    def add_aperture(self, D, name: str = 'unassigned'):
+        """
+        Add an aperture to the vacuum system
+
+        :param D:
+        :param name:
+        :return:
+        """
+        check_aperture_parameters(D)
+        component = Aperture(D, name)
+        self.components.append(component)
+
     def add_tube(self, L: float, D: float, name: str = 'unassigned'):
         """
-        Add a tube to the vacuum system. Length must be sufficiently longer than the diameter for accuracy
+        Add a tube to the vacuum system. The tube is modeled as an aperture in parallel with a long tube. This allows
+        for easily modeling short tubes with an error of at most around 10%.
         
         :param L: Length of the tube, m
         :param D: Inside diameter of the tube, m
@@ -241,3 +247,27 @@ class VacuumSystem:
 
     def __getitem__(self, index: int) -> Component:
         return self.components[index]
+
+
+def solve_system(vac_sys):
+    """
+    Solve for pressure in the vacuum system, return a dictionary that maps chambers to their pressure
+
+    :param vac_sys: VacuumSystem object
+    :return: Dictionary mapping chambers to pressure
+    """
+    unconstrained_chambers = []
+    for chamber in vac_sys.chambers():
+        if chamber.P() is None:
+            unconstrained_chambers.append(chamber)
+
+    Q = make_Q_vec(unconstrained_chambers)
+    C = make_C_matrix(unconstrained_chambers, vac_sys.components)
+    _P = np.linalg.inv(C) @ Q
+    P = {}
+    for chamber in vac_sys.chambers():
+        if chamber in unconstrained_chambers:
+            P[chamber] = _P[unconstrained_chambers.index(chamber)]
+        else:
+            P[chamber] = chamber.P()
+    return P
